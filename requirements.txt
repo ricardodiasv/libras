@@ -1,0 +1,13 @@
+numpy==2.4.4
+pandas==3.0.2
+matplotlib==3.10.9
+tensorflow==2.21.0
+keras==3.14.0
+streamlit==1.57.0
+pillow==12.2.0
+mediapipe==0.10.35
+opencv-python==4.13.0.92
+scikit-learn==1.8.0
+streamlit-webrtc==0.64.6
+h5py==3.14.0
+av==16.1.0
