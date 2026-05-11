@@ -1,6 +1,5 @@
 """
 Treina um modelo para reconhecimento de LIBRAS usando o dataset V-LIBRASIL.
-
 Pipeline:
   1. Lê os vídeos MP4 do dataset.
   2. Extrai landmarks de mãos via MediaPipe HandLandmarker em N frames amostrados.
@@ -8,36 +7,25 @@ Pipeline:
   4. Treina um MLP (Dense) para classificar os sinais.
   5. Salva o modelo em reconhecimento_libras/modelo/libras_vlibrasil.h5
      e o mapeamento de labels em reconhecimento_libras/modelo/libras_vlibrasil_labels.json
-
 Uso:
   cd app
   python train_vlibrasil_model.py
-
 Opções ajustáveis no topo do script:
   FRAMES_PER_VIDEO  – quantos frames amostrar por vídeo (default 10)
   MIN_VIDEOS_CLASS  – mínimo de vídeos por classe para incluí-la (default 2)
   MAX_CLASSES       – limitar a N classes mais frequentes (None = todas)
 """
-
 import os, csv, json, random, math
 import numpy as np
 import cv2
-
-# ── MediaPipe Tasks (API nova) ────────────────────────────────────────────────
 import mediapipe as mp
 from mediapipe.tasks import python as mp_python
 from mediapipe.tasks.python import vision as mp_vision
-
-# ── Keras ─────────────────────────────────────────────────────────────────────
 from keras.models import Sequential
 from keras.layers import Dense, Dropout, BatchNormalization, Input
 from keras.utils import to_categorical
 from keras.callbacks import EarlyStopping, ReduceLROnPlateau
 from sklearn.model_selection import train_test_split
-
-# ════════════════════════════════════════════════════════════════════════════
-# CONFIGURAÇÕES
-# ════════════════════════════════════════════════════════════════════════════
 SCRIPT_DIR      = os.path.dirname(os.path.abspath(__file__))
 DATASET_DIR     = os.path.join(SCRIPT_DIR, 'assets', 'videos UFPE (V-LIBRASIL)', 'data')
 ANNOTATIONS_CSV = os.path.join(SCRIPT_DIR, 'assets', 'videos UFPE (V-LIBRASIL)', 'annotations.csv')
@@ -46,26 +34,16 @@ MODEL_SAVE_PATH = os.path.normpath(os.path.join(
     SCRIPT_DIR, '..', 'reconhecimento_libras', 'modelo', 'libras_vlibrasil.h5'))
 LABELS_SAVE_PATH = os.path.normpath(os.path.join(
     SCRIPT_DIR, '..', 'reconhecimento_libras', 'modelo', 'libras_vlibrasil_labels.json'))
-
-FRAMES_PER_VIDEO  = 10    # frames amostrados uniformemente por vídeo
-MIN_VIDEOS_CLASS  = 2     # descartar classes com menos vídeos
-MAX_CLASSES       = None  # None = todas; ex.: 200 = apenas 200 classes
-
-# Cada mão tem 21 landmarks × 3 coordenadas = 63 valores
-# Usamos até 2 mãos → 126 valores por frame
-# Vetor final por vídeo = FRAMES_PER_VIDEO × 126 (com padding de zeros)
+FRAMES_PER_VIDEO  = 10    
+MIN_VIDEOS_CLASS  = 2     
+MAX_CLASSES       = None  
 N_HANDS   = 2
 N_LAND    = 21
 N_COORDS  = 3
-FEAT_DIM  = FRAMES_PER_VIDEO * N_HANDS * N_LAND * N_COORDS  # 10*2*21*3 = 1260
-
+FEAT_DIM  = FRAMES_PER_VIDEO * N_HANDS * N_LAND * N_COORDS  
 RANDOM_SEED = 42
 random.seed(RANDOM_SEED)
 np.random.seed(RANDOM_SEED)
-
-# ════════════════════════════════════════════════════════════════════════════
-# 1. Criar HandLandmarker (modo IMAGE para processar frames individuais)
-# ════════════════════════════════════════════════════════════════════════════
 def create_landmarker():
     base_options = mp_python.BaseOptions(model_asset_path=HAND_MODEL_PATH)
     options = mp_vision.HandLandmarkerOptions(
@@ -77,11 +55,6 @@ def create_landmarker():
         min_tracking_confidence=0.3,
     )
     return mp_vision.HandLandmarker.create_from_options(options)
-
-
-# ════════════════════════════════════════════════════════════════════════════
-# 2. Extrair vetor de features de um vídeo
-# ════════════════════════════════════════════════════════════════════════════
 def extract_features(video_path: str, landmarker) -> np.ndarray:
     """
     Retorna array de forma (FRAMES_PER_VIDEO, N_HANDS*N_LAND*N_COORDS).
@@ -89,17 +62,13 @@ def extract_features(video_path: str, landmarker) -> np.ndarray:
     """
     cap = cv2.VideoCapture(video_path)
     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 1
-
-    # Índices dos frames a amostrar (uniforme)
     indices = sorted(set(
         int(i * (total - 1) / max(FRAMES_PER_VIDEO - 1, 1))
         for i in range(FRAMES_PER_VIDEO)
     ))
-    # Garantir exatamente FRAMES_PER_VIDEO índices
     while len(indices) < FRAMES_PER_VIDEO:
         indices.append(indices[-1])
     indices = indices[:FRAMES_PER_VIDEO]
-
     frame_feats = []
     for idx in indices:
         cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
@@ -120,14 +89,8 @@ def extract_features(video_path: str, landmarker) -> np.ndarray:
             except Exception:
                 pass
         frame_feats.append(feat)
-
     cap.release()
-    return np.stack(frame_feats, axis=0)  # (FRAMES_PER_VIDEO, 126)
-
-
-# ════════════════════════════════════════════════════════════════════════════
-# 3. Ler anotações e construir dataset
-# ════════════════════════════════════════════════════════════════════════════
+    return np.stack(frame_feats, axis=0)  
 def load_annotations():
     rows = []
     with open(ANNOTATIONS_CSV, encoding='utf-8-sig', newline='') as f:
@@ -136,48 +99,31 @@ def load_annotations():
             if os.path.exists(video_path):
                 rows.append({'path': video_path, 'class': r['class']})
     return rows
-
-
 def filter_classes(rows, min_videos=2, max_classes=None):
     from collections import Counter
     counts = Counter(r['class'] for r in rows)
-    # Manter apenas classes com ≥ min_videos
     valid = {cls for cls, cnt in counts.items() if cnt >= min_videos}
     rows = [r for r in rows if r['class'] in valid]
     if max_classes and len(valid) > max_classes:
-        # Pegar as classes mais frequentes
         top = [cls for cls, _ in counts.most_common(max_classes) if cls in valid]
         valid = set(top)
         rows = [r for r in rows if r['class'] in valid]
     return rows
-
-
-# ════════════════════════════════════════════════════════════════════════════
-# MAIN
-# ════════════════════════════════════════════════════════════════════════════
 if __name__ == '__main__':
     print("=" * 60)
     print("  Treinamento V-LIBRASIL")
     print("=" * 60)
-
-    # ── Carregar anotações ──────────────────────────────────────────────────
     print("\n[1/6] Carregando anotações...")
     rows = load_annotations()
     rows = filter_classes(rows, MIN_VIDEOS_CLASS, MAX_CLASSES)
-
     classes_sorted = sorted(set(r['class'] for r in rows))
     class_to_idx   = {cls: i for i, cls in enumerate(classes_sorted)}
     idx_to_class   = {i: cls for cls, i in class_to_idx.items()}
     NUM_CLASSES    = len(classes_sorted)
-
     print(f"   Vídeos encontrados:  {len(rows)}")
     print(f"   Classes únicas:      {NUM_CLASSES}")
-
-    # ── Criar landmarker ────────────────────────────────────────────────────
     print("\n[2/6] Inicializando MediaPipe HandLandmarker...")
     landmarker = create_landmarker()
-
-    # ── Extrair features ────────────────────────────────────────────────────
     CACHE_FILE = os.path.join(SCRIPT_DIR, 'features_cache.npz')
     if os.path.exists(CACHE_FILE):
         print(f"\n[3/6] Carregando features do cache: {CACHE_FILE}")
@@ -188,36 +134,25 @@ if __name__ == '__main__':
         print(f"\n[3/6] Extraindo landmarks de {len(rows)} vídeos "
               f"({FRAMES_PER_VIDEO} frames cada)...")
         print("      Isso pode demorar vários minutos.\n")
-
         X_list, y_list = [], []
         for i, row in enumerate(rows):
             if i % 100 == 0:
                 print(f"   [{i}/{len(rows)}] {os.path.basename(row['path'])}")
-            feats = extract_features(row['path'], landmarker)  # (F, 126)
-            X_list.append(feats.flatten())                     # (F*126,) = (1260,)
+            feats = extract_features(row['path'], landmarker)  
+            X_list.append(feats.flatten())                     
             y_list.append(class_to_idx[row['class']])
-
-        X = np.array(X_list, dtype=np.float32)  # (N, FEAT_DIM)
+        X = np.array(X_list, dtype=np.float32)  
         y = np.array(y_list, dtype=np.int32)
-        
         print("Salvando features em cache para rodadas futuras...")
         np.savez_compressed(CACHE_FILE, X=X, y=y)
-
     print(f"\n   Shape X: {X.shape}")
     print(f"   Shape y: {y.shape}")
-
-    # ── Split treino/validação ──────────────────────────────────────────────
     print("\n[4/6] Dividindo treino/validação (85%/15%)...")
     y_cat = to_categorical(y, num_classes=NUM_CLASSES)
-    
-    # Removido o stratify=y para evitar o erro "test_size should be greater or equal to the number of classes"
-    # já que temos 1361 classes e o test_size de 15% seria ~611 amostras.
     X_train, X_val, y_train, y_val = train_test_split(
         X, y_cat, test_size=0.15, random_state=RANDOM_SEED
     )
     print(f"   Treino: {X_train.shape[0]} | Validação: {X_val.shape[0]}")
-
-    # ── Construir modelo MLP ────────────────────────────────────────────────
     print("\n[5/6] Construindo e treinando modelo MLP...")
     model = Sequential([
         Input(shape=(FEAT_DIM,)),
@@ -238,14 +173,12 @@ if __name__ == '__main__':
         metrics=['accuracy']
     )
     model.summary()
-
     callbacks = [
         EarlyStopping(monitor='val_accuracy', patience=10,
                       restore_best_weights=True, verbose=1),
         ReduceLROnPlateau(monitor='val_loss', factor=0.5,
                           patience=4, min_lr=1e-6, verbose=1),
     ]
-
     history = model.fit(
         X_train, y_train,
         validation_data=(X_val, y_val),
@@ -254,18 +187,14 @@ if __name__ == '__main__':
         callbacks=callbacks,
         verbose=1,
     )
-
     val_loss, val_acc = model.evaluate(X_val, y_val, verbose=0)
     print(f"\n[OK] Acurácia na validação: {val_acc:.2%}")
     print(f"   Loss na validação:    {val_loss:.4f}")
-
-    # ── Salvar modelo e labels ──────────────────────────────────────────────
     print("\n[6/6] Salvando modelo e mapeamento de labels...")
     os.makedirs(os.path.dirname(MODEL_SAVE_PATH), exist_ok=True)
     model.save(MODEL_SAVE_PATH)
     with open(LABELS_SAVE_PATH, 'w', encoding='utf-8') as f:
         json.dump(idx_to_class, f, ensure_ascii=False, indent=2)
-
     print(f"\n[SAVE] Modelo salvo em:  {MODEL_SAVE_PATH}")
     print(f"   Labels salvo em: {LABELS_SAVE_PATH}")
     print(f"   Input shape:     {model.input_shape}")

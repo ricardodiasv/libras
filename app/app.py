@@ -12,10 +12,8 @@ import os
 import urllib.request
 import av
 from collections import deque
-
 current_dir = os.path.dirname(os.path.abspath(__file__))
 HAND_MODEL_PATH = os.path.join(current_dir, 'hand_landmarker.task')
-
 if not os.path.exists(HAND_MODEL_PATH):
     HAND_MODEL_URL = (
         "https://storage.googleapis.com/mediapipe-models/"
@@ -23,10 +21,6 @@ if not os.path.exists(HAND_MODEL_PATH):
     )
     with st.spinner("Baixando modelo de detecção de mãos..."):
         urllib.request.urlretrieve(HAND_MODEL_URL, HAND_MODEL_PATH)
-
-# ──────────────────────────────────────────────────────────────
-# HandLandmarker
-# ──────────────────────────────────────────────────────────────
 def create_hand_landmarker_image():
     base_options = mp_python.BaseOptions(model_asset_path=HAND_MODEL_PATH)
     options = mp_vision.HandLandmarkerOptions(
@@ -38,7 +32,6 @@ def create_hand_landmarker_image():
         min_tracking_confidence=0.5,
     )
     return mp_vision.HandLandmarker.create_from_options(options)
-
 def create_hand_landmarker_video():
     base_options = mp_python.BaseOptions(model_asset_path=HAND_MODEL_PATH)
     options = mp_vision.HandLandmarkerOptions(
@@ -50,27 +43,17 @@ def create_hand_landmarker_video():
         min_tracking_confidence=0.5,
     )
     return mp_vision.HandLandmarker.create_from_options(options)
-
-# ──────────────────────────────────────────────────────────────
-# Modelos de classificação
-# ──────────────────────────────────────────────────────────────
-
-# --- V-LIBRASIL (palavras em português - novo dataset) ---
 VLIBRASIL_MODEL_PATH  = os.path.normpath(os.path.join(
     current_dir, '..', 'reconhecimento_libras', 'modelo', 'libras_vlibrasil.h5'))
 VLIBRASIL_LABELS_PATH = os.path.normpath(os.path.join(
     current_dir, '..', 'reconhecimento_libras', 'modelo', 'libras_vlibrasil_labels.json'))
-
-# Parâmetros de extração de features (deve coincidir com train_vlibrasil_model.py)
 FRAMES_PER_VIDEO = 10
 N_HANDS   = 2
 N_LAND    = 21
 N_COORDS  = 3
-FEAT_DIM  = FRAMES_PER_VIDEO * N_HANDS * N_LAND * N_COORDS  # 1260
-
+FEAT_DIM  = FRAMES_PER_VIDEO * N_HANDS * N_LAND * N_COORDS  
 vlibrasil_model  = None
 VLIBRASIL_LABELS = {}
-
 if os.path.exists(VLIBRASIL_MODEL_PATH) and os.path.exists(VLIBRASIL_LABELS_PATH):
     vlibrasil_model = load_model(VLIBRASIL_MODEL_PATH)
     with open(VLIBRASIL_LABELS_PATH, encoding='utf-8') as f:
@@ -81,13 +64,10 @@ else:
         "⚠️ Modelo V-LIBRASIL não encontrado. "
         "Execute `python train_vlibrasil_model.py` na pasta `app/` para treinar."
     )
-
-# --- LIBRAS Alfabeto (Imagens Estáticas) ---
 ALFABETO_MODEL_PATH = os.path.normpath(os.path.join(
     current_dir, '..', 'reconhecimento_libras', 'modelo', 'libras_alfabeto.h5'))
 ALFABETO_LABELS_PATH = os.path.normpath(os.path.join(
     current_dir, '..', 'reconhecimento_libras', 'modelo', 'libras_alfabeto_labels.json'))
-
 alfabeto_model = None
 ALFABETO_LABELS = {}
 if os.path.exists(ALFABETO_MODEL_PATH) and os.path.exists(ALFABETO_LABELS_PATH):
@@ -95,9 +75,6 @@ if os.path.exists(ALFABETO_MODEL_PATH) and os.path.exists(ALFABETO_LABELS_PATH):
     with open(ALFABETO_LABELS_PATH, encoding='utf-8') as f:
         raw = json.load(f)
         ALFABETO_LABELS = {int(k): v for k, v in raw.items()}
-
-
-# --- LIBRAS legado (palavras em inglês - modelo antigo) ---
 libras_path = os.path.normpath(os.path.join(
     current_dir, '..', 'reconhecimento_libras', 'modelo', 'NewModel.h5'))
 libras_model = None
@@ -108,8 +85,6 @@ LIBRAS_LABELS = {
 }
 if os.path.exists(libras_path):
     libras_model = load_model(libras_path)
-
-# --- ASL (letras A-Y, sem J e Z) ---
 asl_path = os.path.normpath(os.path.join(
     current_dir, '..', 'reconhecimento_libras', 'modelo', 'asl_model.h5'))
 asl_model = None
@@ -121,15 +96,10 @@ ASL_LABELS = {
 }
 if os.path.exists(asl_path):
     asl_model = load_model(asl_path)
-
-# ──────────────────────────────────────────────────────────────
-# Buffer de landmarks para V-LIBRASIL (janela deslizante)
-# ──────────────────────────────────────────────────────────────
 class LandmarkBuffer:
     """Mantém os últimos FRAMES_PER_VIDEO vetores de landmarks para predição."""
     def __init__(self):
         self.buffer = deque(maxlen=FRAMES_PER_VIDEO)
-
     def add(self, hand_landmarks_list):
         feat = np.zeros(N_HANDS * N_LAND * N_COORDS, dtype=np.float32)
         for h_idx, hand_lm in enumerate(hand_landmarks_list[:N_HANDS]):
@@ -140,21 +110,14 @@ class LandmarkBuffer:
                 feat[base + 1] = lm.y
                 feat[base + 2] = lm.z
         self.buffer.append(feat)
-
     def get_feature_vector(self):
         """Retorna vetor (FEAT_DIM,) com padding à esquerda se necessário."""
         frames = list(self.buffer)
         while len(frames) < FRAMES_PER_VIDEO:
             frames.insert(0, np.zeros(N_HANDS * N_LAND * N_COORDS, dtype=np.float32))
         return np.concatenate(frames[:FRAMES_PER_VIDEO])
-
     def ready(self):
         return len(self.buffer) >= FRAMES_PER_VIDEO // 2
-
-
-# ──────────────────────────────────────────────────────────────
-# Pré-processamento e predição
-# ──────────────────────────────────────────────────────────────
 def _preprocess_libras(hand_roi_bgr):
     """Resize para (213, 120, 3) com padding, BGR→RGB."""
     TARGET_H, TARGET_W = 213, 120
@@ -167,13 +130,11 @@ def _preprocess_libras(hand_roi_bgr):
     y0, x0 = (TARGET_H - nh) // 2, (TARGET_W - nw) // 2
     canvas[y0:y0+nh, x0:x0+nw] = resized
     return canvas.astype('float32') / 255.0
-
 def _preprocess_asl(hand_roi_bgr):
     """Resize para (28, 28, 1) grayscale."""
     gray = cv2.cvtColor(hand_roi_bgr, cv2.COLOR_BGR2GRAY)
     resized = cv2.resize(gray, (28, 28))
     return resized.astype('float32').reshape(28, 28, 1) / 255.0
-
 def predict_from_roi(hand_roi_bgr, model_choice, confidence_threshold=0.70):
     """Predição baseada em ROI de imagem (ASL e LIBRAS legado)."""
     if model_choice == 'LIBRAS' and libras_model is not None:
@@ -184,14 +145,12 @@ def predict_from_roi(hand_roi_bgr, model_choice, confidence_threshold=0.70):
         mdl, labels = asl_model, ASL_LABELS
     else:
         return None, 0.0, []
-
     probs = mdl(np.expand_dims(inp, axis=0), training=False).numpy()[0]
     best_idx  = int(probs.argmax())
     best_conf = float(probs[best_idx])
     if best_conf >= confidence_threshold:
         return labels[best_idx], best_conf, probs
     return None, best_conf, probs
-
 def predict_vlibrasil(feat_vector, confidence_threshold=0.50):
     """Predição V-LIBRASIL a partir do vetor de landmarks agregado."""
     if vlibrasil_model is None:
@@ -204,7 +163,6 @@ def predict_vlibrasil(feat_vector, confidence_threshold=0.50):
     if best_conf >= confidence_threshold:
         return VLIBRASIL_LABELS.get(best_idx, str(best_idx)), best_conf
     return None, best_conf
-
 def predict_alfabeto(feat_vector, confidence_threshold=0.50):
     if alfabeto_model is None:
         return None, 0.0
@@ -216,10 +174,6 @@ def predict_alfabeto(feat_vector, confidence_threshold=0.50):
     if best_conf >= confidence_threshold:
         return ALFABETO_LABELS.get(best_idx, str(best_idx)), best_conf
     return None, best_conf
-
-# ──────────────────────────────────────────────────────────────
-# Desenho e processamento de frames
-# ──────────────────────────────────────────────────────────────
 def draw_coordinates(hand_landmarks, img, model_choice, confidence_threshold=0.70):
     offset = 20
     xs = [lm.x * img.shape[1] for lm in hand_landmarks]
@@ -239,7 +193,6 @@ def draw_coordinates(hand_landmarks, img, model_choice, confidence_threshold=0.7
             cv2.putText(img, text, (x_min, text_y),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (36, 255, 12), 2)
     return img, label
-
 def draw_subtitle_bar(img, subtitle_text):
     if not subtitle_text:
         return img
@@ -254,28 +207,22 @@ def draw_subtitle_bar(img, subtitle_text):
     text_y = h - (bar_h - text_size[1]) // 2
     cv2.putText(img, subtitle_text, (text_x, text_y), font, 1.0, (255, 255, 255), 2)
     return img
-
 def process_frame_image(img, landmarker, model_choice, confidence_threshold=0.70,
                         lm_buffer=None):
     rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
     mp_img = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
     results = landmarker.detect(mp_img)
     detected_labels = []
-
     if results.hand_landmarks:
-        # Atualizar buffer para V-LIBRASIL
         if lm_buffer is not None:
             lm_buffer.add(results.hand_landmarks)
-
         if model_choice == 'VLIBRASIL':
-            # Predição com buffer de sequência
             if lm_buffer is not None and lm_buffer.ready():
                 feat = lm_buffer.get_feature_vector()
                 label, conf = predict_vlibrasil(feat, confidence_threshold)
                 if label:
                     detected_labels.append(label)
         elif model_choice == 'LIBRAS_ALFABETO':
-            # Predição com 1 frame apenas
             feat = np.zeros(2 * 21 * 3, dtype=np.float32)
             for h_idx, hand_lm in enumerate(results.hand_landmarks[:2]):
                 offset = h_idx * 21 * 3
@@ -287,7 +234,6 @@ def process_frame_image(img, landmarker, model_choice, confidence_threshold=0.70
             label, conf = predict_alfabeto(feat, confidence_threshold)
             if label:
                 detected_labels.append(label)
-                # Desenhar bounding box
             for hl in results.hand_landmarks:
                 xs = [lm.x * img.shape[1] for lm in hl]
                 ys = [lm.y * img.shape[0] for lm in hl]
@@ -305,20 +251,16 @@ def process_frame_image(img, landmarker, model_choice, confidence_threshold=0.70
                 img, label = draw_coordinates(hl, img, model_choice, confidence_threshold)
                 if label:
                     detected_labels.append(label)
-
     return img, detected_labels
-
 def process_frame_video(img, landmarker, timestamp_ms, model_choice,
                         confidence_threshold=0.70, lm_buffer=None):
     rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
     mp_img = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
     results = landmarker.detect_for_video(mp_img, timestamp_ms)
     detected_labels = []
-
     if results.hand_landmarks:
         if lm_buffer is not None:
             lm_buffer.add(results.hand_landmarks)
-
         if model_choice == 'VLIBRASIL':
             if lm_buffer is not None and lm_buffer.ready():
                 feat = lm_buffer.get_feature_vector()
@@ -338,30 +280,18 @@ def process_frame_video(img, landmarker, timestamp_ms, model_choice,
                 img, label = draw_coordinates(hl, img, model_choice, confidence_threshold)
                 if label:
                     detected_labels.append(label)
-
     return img, detected_labels
-
-
-# ──────────────────────────────────────────────────────────────
-# Estabilizador de legendas
-# ──────────────────────────────────────────────────────────────
 class SubtitleStabilizer:
     def __init__(self, stability_frames=5):
         self.stability_frames = stability_frames
         self.history = deque(maxlen=stability_frames)
         self.current_text = ""
-
     def update(self, labels):
         text = " + ".join(sorted(labels)) if labels else ""
         self.history.append(text)
         if len(self.history) == self.stability_frames and len(set(self.history)) == 1:
             self.current_text = text
         return self.current_text
-
-
-# ──────────────────────────────────────────────────────────────
-# Transformer para Webcam
-# ──────────────────────────────────────────────────────────────
 class VideoTransformer(VideoTransformerBase):
     def __init__(self):
         self.landmarker   = create_hand_landmarker_image()
@@ -369,7 +299,6 @@ class VideoTransformer(VideoTransformerBase):
         self.confidence_threshold = 0.70
         self.stabilizer   = SubtitleStabilizer(stability_frames=3)
         self.lm_buffer    = LandmarkBuffer()
-
     def transform(self, frame):
         img = frame.to_ndarray(format="bgr24")
         img = cv2.flip(img, 1)
@@ -380,30 +309,19 @@ class VideoTransformer(VideoTransformerBase):
         subtitle = self.stabilizer.update(labels)
         img = draw_subtitle_bar(img, subtitle)
         return img
-
-
-# ──────────────────────────────────────────────────────────────
-# Interface Streamlit
-# ──────────────────────────────────────────────────────────────
 st.sidebar.image(
     "https://www.mjvinnovation.com/wp-content/uploads/2021/07/"
     "mjv_blogpost_redes_neurais_ilustracao_cerebro-01-1024x1020.png"
 )
 st.sidebar.title('Reconhecimento de :red[Sinais] :wave:')
-
 st.sidebar.info("""\
 ## Reconhecimento de Mãos - Projeto
-
 Este projeto visa desenvolver um programa capaz de utilizar uma rede neural
 treinada para detectar mãos em tempo real por meio da câmera do usuário, ou
 através do upload de um vídeo. Usando um modelo de rede neural CNN.
 """)
-
-# ── Seletor de modelo ─────────────────────────────────────────
 st.sidebar.markdown("---")
 st.sidebar.markdown("### Modelo de reconhecimento")
-
-# Opções disponíveis dependem dos modelos carregados
 _options = ["ASL (Letras A-Y)"]
 if libras_model is not None:
     _options.append("LIBRAS Legado (15 palavras)")
@@ -411,7 +329,6 @@ if vlibrasil_model is not None:
     _options.append("V-LIBRASIL (Palavras em Português)")
 if alfabeto_model is not None:
     _options.append("LIBRAS Alfabeto (Letras Estáticas)")
-
 MODEL_CHOICE_STR = st.sidebar.radio(
     "Selecione o modelo:",
     _options,
@@ -421,7 +338,6 @@ MODEL_CHOICE_STR = st.sidebar.radio(
         "V-LIBRASIL = dataset completo da UFPE."
     )
 )
-
 if "V-LIBRASIL" in MODEL_CHOICE_STR:
     MODEL_KEY = 'VLIBRASIL'
 elif "Alfabeto" in MODEL_CHOICE_STR:
@@ -430,8 +346,6 @@ elif "Legado" in MODEL_CHOICE_STR:
     MODEL_KEY = 'LIBRAS'
 else:
     MODEL_KEY = 'ASL'
-
-# Status dos modelos
 st.sidebar.markdown("---")
 st.sidebar.markdown("### Status dos modelos")
 st.sidebar.markdown(f"{'✅' if asl_model else '❌'} ASL")
@@ -443,8 +357,6 @@ st.sidebar.markdown(
 )
 if vlibrasil_model:
     st.sidebar.caption(f"{len(VLIBRASIL_LABELS)} classes carregadas")
-
-
 def exibir_imagem():
     st.subheader("Imagem dos sinais (dataset legado)")
     num_colunas = 5
@@ -471,13 +383,7 @@ def exibir_imagem():
                 st.image(imagem_path, caption=legenda, width=150)
             else:
                 st.caption(f"[{legenda}] (imagem nao encontrada)")
-
-
-# ──────────────────────────────────────────────────────────────
-# Pagina principal
-# ──────────────────────────────────────────────────────────────
 st.title("Sistema de Leitura de Gestos em LIBRAS")
-
 if MODEL_KEY == 'VLIBRASIL' and vlibrasil_model is None:
     st.error(
         "🚫 Modelo V-LIBRASIL não está treinado ainda.\n\n"
@@ -486,7 +392,6 @@ if MODEL_KEY == 'VLIBRASIL' and vlibrasil_model is None:
         "O treinamento pode levar 30-60 minutos dependendo do hardware."
     )
     st.stop()
-
 st.sidebar.markdown("---")
 st.sidebar.markdown("### Configuracoes de predicao")
 CONFIDENCE = st.sidebar.slider(
@@ -500,107 +405,84 @@ STABILITY = st.sidebar.slider(
     min_value=1, max_value=10, value=3,
     help="Frames consecutivos necessarios para mudar a legenda"
 )
-
 modo = st.radio("Selecione a fonte de entrada:", ("Webcam", "Upload de Video"))
-
 if modo == "Webcam":
     ctx = webrtc_streamer(key="hand-recognition-1", video_processor_factory=VideoTransformer)
     if ctx.video_processor:
         ctx.video_processor.model_choice = MODEL_KEY
         ctx.video_processor.confidence_threshold = CONFIDENCE
         ctx.video_processor.stabilizer.stability_frames = STABILITY
-
 elif modo == "Upload de Video":
     FRAME_SKIP = st.sidebar.slider(
         "Processar 1 a cada N frames",
         min_value=1, max_value=6, value=2,
         help="Valores maiores = processamento mais rapido"
     )
-
     video_file = st.file_uploader(
         "Faca o upload do seu video (MP4, AVI, MOV)", type=['mp4', 'avi', 'mov']
     )
-
     if video_file is not None:
         tfile_in = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
         tfile_in.write(video_file.read())
         tfile_in.close()
-
         cap = cv2.VideoCapture(tfile_in.name)
         fps_val    = cap.get(cv2.CAP_PROP_FPS) or 25.0
         width      = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         height     = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-
         tfile_out = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
         tfile_out.close()
-
         output_container = av.open(tfile_out.name, mode='w')
         video_stream = output_container.add_stream('h264', rate=int(fps_val))
         video_stream.width   = width
         video_stream.height  = height
         video_stream.pix_fmt = 'yuv420p'
         video_stream.options = {'preset': 'fast', 'crf': '23'}
-
         progress_bar = st.progress(0, text="Processando video...")
-
         landmarker  = create_hand_landmarker_video()
         stabilizer  = SubtitleStabilizer(stability_frames=STABILITY)
         lm_buffer   = LandmarkBuffer()
         frame_count = 0
         last_annotated = None
         last_labels    = []
-
         while True:
             ret, frame = cap.read()
             if not ret:
                 break
-
             frame_count += 1
             timestamp_ms = int(cap.get(cv2.CAP_PROP_POS_MSEC))
-
             if frame_count % FRAME_SKIP == 0:
                 last_annotated, last_labels = process_frame_video(
                     frame.copy(), landmarker, timestamp_ms,
                     MODEL_KEY, CONFIDENCE, lm_buffer
                 )
-
             display_frame = last_annotated if last_annotated is not None else frame
             subtitle = stabilizer.update(last_labels)
             display_frame = draw_subtitle_bar(display_frame.copy(), subtitle)
-
             av_frame = av.VideoFrame.from_ndarray(display_frame, format='bgr24')
             for packet in video_stream.encode(av_frame):
                 output_container.mux(packet)
-
             if total_frames > 0:
                 pct = min(frame_count / total_frames, 1.0)
                 progress_bar.progress(pct,
                     text=f"Processando... frame {frame_count}/{total_frames}")
-
         cap.release()
         for packet in video_stream.encode():
             output_container.mux(packet)
         output_container.close()
-
         progress_bar.empty()
         st.success("Processamento concluido! Reproduzindo o video anotado:")
-
         with open(tfile_out.name, 'rb') as vf:
             st.video(vf.read())
-
         for p in [tfile_in.name, tfile_out.name]:
             try:
                 os.remove(p)
             except Exception:
                 pass
-
 if st.button("Clique aqui para exibir as imagens do dataset legado"):
     exibir_imagem()
-
 st.sidebar.write("""\
 ## Integrantes
-
 - Lorrayne
 - Libhinny
 - Samira
