@@ -178,20 +178,30 @@ if __name__ == '__main__':
     landmarker = create_landmarker()
 
     # ── Extrair features ────────────────────────────────────────────────────
-    print(f"\n[3/6] Extraindo landmarks de {len(rows)} vídeos "
-          f"({FRAMES_PER_VIDEO} frames cada)...")
-    print("      Isso pode demorar vários minutos.\n")
+    CACHE_FILE = os.path.join(SCRIPT_DIR, 'features_cache.npz')
+    if os.path.exists(CACHE_FILE):
+        print(f"\n[3/6] Carregando features do cache: {CACHE_FILE}")
+        data = np.load(CACHE_FILE)
+        X = data['X']
+        y = data['y']
+    else:
+        print(f"\n[3/6] Extraindo landmarks de {len(rows)} vídeos "
+              f"({FRAMES_PER_VIDEO} frames cada)...")
+        print("      Isso pode demorar vários minutos.\n")
 
-    X_list, y_list = [], []
-    for i, row in enumerate(rows):
-        if i % 100 == 0:
-            print(f"   [{i}/{len(rows)}] {os.path.basename(row['path'])}")
-        feats = extract_features(row['path'], landmarker)  # (F, 126)
-        X_list.append(feats.flatten())                     # (F*126,) = (1260,)
-        y_list.append(class_to_idx[row['class']])
+        X_list, y_list = [], []
+        for i, row in enumerate(rows):
+            if i % 100 == 0:
+                print(f"   [{i}/{len(rows)}] {os.path.basename(row['path'])}")
+            feats = extract_features(row['path'], landmarker)  # (F, 126)
+            X_list.append(feats.flatten())                     # (F*126,) = (1260,)
+            y_list.append(class_to_idx[row['class']])
 
-    X = np.array(X_list, dtype=np.float32)  # (N, FEAT_DIM)
-    y = np.array(y_list, dtype=np.int32)
+        X = np.array(X_list, dtype=np.float32)  # (N, FEAT_DIM)
+        y = np.array(y_list, dtype=np.int32)
+        
+        print("Salvando features em cache para rodadas futuras...")
+        np.savez_compressed(CACHE_FILE, X=X, y=y)
 
     print(f"\n   Shape X: {X.shape}")
     print(f"   Shape y: {y.shape}")
@@ -199,8 +209,11 @@ if __name__ == '__main__':
     # ── Split treino/validação ──────────────────────────────────────────────
     print("\n[4/6] Dividindo treino/validação (85%/15%)...")
     y_cat = to_categorical(y, num_classes=NUM_CLASSES)
+    
+    # Removido o stratify=y para evitar o erro "test_size should be greater or equal to the number of classes"
+    # já que temos 1361 classes e o test_size de 15% seria ~611 amostras.
     X_train, X_val, y_train, y_val = train_test_split(
-        X, y_cat, test_size=0.15, random_state=RANDOM_SEED, stratify=y
+        X, y_cat, test_size=0.15, random_state=RANDOM_SEED
     )
     print(f"   Treino: {X_train.shape[0]} | Validação: {X_val.shape[0]}")
 
@@ -243,7 +256,7 @@ if __name__ == '__main__':
     )
 
     val_loss, val_acc = model.evaluate(X_val, y_val, verbose=0)
-    print(f"\n✅ Acurácia na validação: {val_acc:.2%}")
+    print(f"\n[OK] Acurácia na validação: {val_acc:.2%}")
     print(f"   Loss na validação:    {val_loss:.4f}")
 
     # ── Salvar modelo e labels ──────────────────────────────────────────────
@@ -253,11 +266,11 @@ if __name__ == '__main__':
     with open(LABELS_SAVE_PATH, 'w', encoding='utf-8') as f:
         json.dump(idx_to_class, f, ensure_ascii=False, indent=2)
 
-    print(f"\n💾 Modelo salvo em:  {MODEL_SAVE_PATH}")
+    print(f"\n[SAVE] Modelo salvo em:  {MODEL_SAVE_PATH}")
     print(f"   Labels salvo em: {LABELS_SAVE_PATH}")
     print(f"   Input shape:     {model.input_shape}")
     print(f"   Output shape:    {model.output_shape}")
     print(f"   Número de classes: {NUM_CLASSES}")
     print(f"\n   FEAT_DIM = {FRAMES_PER_VIDEO} frames × {N_HANDS} mãos × "
           f"{N_LAND} landmarks × {N_COORDS} coords = {FEAT_DIM}")
-    print("\nTreinamento concluído! ✔")
+    print("\nTreinamento concluído! [DONE]")

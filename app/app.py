@@ -82,6 +82,21 @@ else:
         "Execute `python train_vlibrasil_model.py` na pasta `app/` para treinar."
     )
 
+# --- LIBRAS Alfabeto (Imagens Estáticas) ---
+ALFABETO_MODEL_PATH = os.path.normpath(os.path.join(
+    current_dir, '..', 'reconhecimento_libras', 'modelo', 'libras_alfabeto.h5'))
+ALFABETO_LABELS_PATH = os.path.normpath(os.path.join(
+    current_dir, '..', 'reconhecimento_libras', 'modelo', 'libras_alfabeto_labels.json'))
+
+alfabeto_model = None
+ALFABETO_LABELS = {}
+if os.path.exists(ALFABETO_MODEL_PATH) and os.path.exists(ALFABETO_LABELS_PATH):
+    alfabeto_model = load_model(ALFABETO_MODEL_PATH)
+    with open(ALFABETO_LABELS_PATH, encoding='utf-8') as f:
+        raw = json.load(f)
+        ALFABETO_LABELS = {int(k): v for k, v in raw.items()}
+
+
 # --- LIBRAS legado (palavras em inglês - modelo antigo) ---
 libras_path = os.path.normpath(os.path.join(
     current_dir, '..', 'reconhecimento_libras', 'modelo', 'NewModel.h5'))
@@ -190,6 +205,17 @@ def predict_vlibrasil(feat_vector, confidence_threshold=0.50):
         return VLIBRASIL_LABELS.get(best_idx, str(best_idx)), best_conf
     return None, best_conf
 
+def predict_alfabeto(feat_vector, confidence_threshold=0.50):
+    if alfabeto_model is None:
+        return None, 0.0
+    probs = alfabeto_model(
+        np.expand_dims(feat_vector, axis=0), training=False
+    ).numpy()[0]
+    best_idx = int(probs.argmax())
+    best_conf = float(probs[best_idx])
+    if best_conf >= confidence_threshold:
+        return ALFABETO_LABELS.get(best_idx, str(best_idx)), best_conf
+    return None, best_conf
 
 # ──────────────────────────────────────────────────────────────
 # Desenho e processamento de frames
@@ -248,6 +274,19 @@ def process_frame_image(img, landmarker, model_choice, confidence_threshold=0.70
                 label, conf = predict_vlibrasil(feat, confidence_threshold)
                 if label:
                     detected_labels.append(label)
+        elif model_choice == 'LIBRAS_ALFABETO':
+            # Predição com 1 frame apenas
+            feat = np.zeros(2 * 21 * 3, dtype=np.float32)
+            for h_idx, hand_lm in enumerate(results.hand_landmarks[:2]):
+                offset = h_idx * 21 * 3
+                for l_idx, lm in enumerate(hand_lm):
+                    base = offset + l_idx * 3
+                    feat[base] = lm.x
+                    feat[base + 1] = lm.y
+                    feat[base + 2] = lm.z
+            label, conf = predict_alfabeto(feat, confidence_threshold)
+            if label:
+                detected_labels.append(label)
                 # Desenhar bounding box
             for hl in results.hand_landmarks:
                 xs = [lm.x * img.shape[1] for lm in hl]
@@ -370,6 +409,8 @@ if libras_model is not None:
     _options.append("LIBRAS Legado (15 palavras)")
 if vlibrasil_model is not None:
     _options.append("V-LIBRASIL (Palavras em Português)")
+if alfabeto_model is not None:
+    _options.append("LIBRAS Alfabeto (Letras Estáticas)")
 
 MODEL_CHOICE_STR = st.sidebar.radio(
     "Selecione o modelo:",
@@ -383,6 +424,8 @@ MODEL_CHOICE_STR = st.sidebar.radio(
 
 if "V-LIBRASIL" in MODEL_CHOICE_STR:
     MODEL_KEY = 'VLIBRASIL'
+elif "Alfabeto" in MODEL_CHOICE_STR:
+    MODEL_KEY = 'LIBRAS_ALFABETO'
 elif "Legado" in MODEL_CHOICE_STR:
     MODEL_KEY = 'LIBRAS'
 else:
@@ -393,6 +436,7 @@ st.sidebar.markdown("---")
 st.sidebar.markdown("### Status dos modelos")
 st.sidebar.markdown(f"{'✅' if asl_model else '❌'} ASL")
 st.sidebar.markdown(f"{'✅' if libras_model else '❌'} LIBRAS Legado")
+st.sidebar.markdown(f"{'✅' if alfabeto_model else '❌'} LIBRAS Alfabeto")
 st.sidebar.markdown(
     f"{'✅' if vlibrasil_model else '⚠️'} V-LIBRASIL "
     f"({'treinado' if vlibrasil_model else 'execute train_vlibrasil_model.py'})"
@@ -443,29 +487,34 @@ if MODEL_KEY == 'VLIBRASIL' and vlibrasil_model is None:
     )
     st.stop()
 
+st.sidebar.markdown("---")
+st.sidebar.markdown("### Configuracoes de predicao")
+CONFIDENCE = st.sidebar.slider(
+    "Confianca minima (%)",
+    min_value=1, max_value=99,
+    value=50 if MODEL_KEY == 'VLIBRASIL' else 70,
+    help="Aumentar reduz falsos positivos"
+) / 100.0
+STABILITY = st.sidebar.slider(
+    "Estabilidade da legenda (frames)",
+    min_value=1, max_value=10, value=3,
+    help="Frames consecutivos necessarios para mudar a legenda"
+)
+
 modo = st.radio("Selecione a fonte de entrada:", ("Webcam", "Upload de Video"))
 
 if modo == "Webcam":
-    webrtc_streamer(key="hand-recognition-1", video_processor_factory=VideoTransformer)
+    ctx = webrtc_streamer(key="hand-recognition-1", video_processor_factory=VideoTransformer)
+    if ctx.video_processor:
+        ctx.video_processor.model_choice = MODEL_KEY
+        ctx.video_processor.confidence_threshold = CONFIDENCE
+        ctx.video_processor.stabilizer.stability_frames = STABILITY
 
 elif modo == "Upload de Video":
-    st.sidebar.markdown("---")
-    st.sidebar.markdown("### Configuracoes de predicao")
     FRAME_SKIP = st.sidebar.slider(
         "Processar 1 a cada N frames",
         min_value=1, max_value=6, value=2,
         help="Valores maiores = processamento mais rapido"
-    )
-    CONFIDENCE = st.sidebar.slider(
-        "Confianca minima (%)",
-        min_value=10, max_value=99,
-        value=50 if MODEL_KEY == 'VLIBRASIL' else 70,
-        help="Aumentar reduz falsos positivos"
-    ) / 100.0
-    STABILITY = st.sidebar.slider(
-        "Estabilidade da legenda (frames)",
-        min_value=1, max_value=10, value=3,
-        help="Frames consecutivos necessarios para mudar a legenda"
     )
 
     video_file = st.file_uploader(
